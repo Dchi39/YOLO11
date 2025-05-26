@@ -7,7 +7,7 @@ import time
 cap = cv2.VideoCapture(1)  # For Webcam
 cap.set(3, 640)
 cap.set(4, 420)
-# cap = cv2.VideoCapture("../Videos/motorbikes.mp4")  # For Video
+# cap = cv2.VideoCapture("ADD Video file")  # For Video
 
 
 model = YOLO("weight/yolo11n.pt")  # Load the YOLOv8 model
