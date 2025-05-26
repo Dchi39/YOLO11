@@ -1,0 +1,114 @@
+from ultralytics import YOLO
+import cv2
+import cvzone
+import math
+import time
+import serial
+
+# ========== Serial Setup ==========
+arduino = serial.Serial('COM8', 9600)  # Change to your port
+time.sleep(2)
+
+# ========== Video Capture Setup ==========
+cap = cv2.VideoCapture(1)
+cap.set(3, 640)
+cap.set(4, 480)
+
+# ========== Load YOLO Model ==========
+model = YOLO("weight/yolo11n.pt")
+classNames = model.names
+
+# ========== PID Controller Setup ==========
+Kp = 0.02
+Ki = 0.0005
+Kd = 0.001
+previous_error = 0
+integral = 0
+
+# ========== Servo Position ==========
+servo_pos = 90  # Initial position
+min_servo = 30
+max_servo = 150
+
+# ========== FPS Timing ==========
+prev_frame_time = 0
+
+while True:
+    new_frame_time = time.time()
+    success, img = cap.read()
+    if not success:
+        break
+
+    frame_center_x = img.shape[1] // 2
+    frame_center_y = img.shape[0] // 2
+
+    # Draw center cross lines
+    cv2.line(img, (frame_center_x, 0), (frame_center_x, img.shape[0]), (0, 255, 0), 1)
+    cv2.line(img, (0, frame_center_y), (img.shape[1], frame_center_y), (0, 255, 0), 1)
+
+    results = model(img, stream=True)
+
+    target_found = False
+
+    for r in results:
+        for box in r.boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            w, h = x2 - x1, y2 - y1
+            cx = x1 + w // 2
+            cy = y1 + h // 2
+
+            conf = math.ceil((box.conf[0] * 100)) / 100
+            cls = int(box.cls[0])
+            label = classNames[cls]
+
+            if label == "remote":
+                target_found = True
+
+                # Draw visuals
+                cvzone.cornerRect(img, (x1, y1, w, h))
+                cvzone.putTextRect(img, f'{label} {conf}', (x1, y1 - 10), scale=1, thickness=1)
+                cv2.circle(img, (cx, cy), 5, (0, 0, 255), cv2.FILLED)
+
+                # PID Calculation
+                error = frame_center_x - cx  # Fixed direction
+                integral += error
+                derivative = error - previous_error
+                output = Kp * error + Ki * integral + Kd * derivative
+                previous_error = error
+
+                # Apply output to servo position
+                servo_pos += output
+
+                # Limit how fast it can change
+                max_step = 2  # adjust for smoothness
+                servo_pos = max(servo_pos - max_step, min(servo_pos + max_step, int(servo_pos)))
+
+                # Constrain final servo position
+                servo_pos = max(min_servo, min(max_servo, servo_pos))
+
+                # Send to Arduino
+                arduino.write(f'{int(servo_pos)}\n'.encode())
+                print(f'Servo: {servo_pos} | Error: {error:.2f}')
+
+                break  # Only track the first phone found
+
+    # If no phone found, optionally stop or slowly return to center
+    if not target_found:
+        # Optionally reset integral or return slowly
+        integral = 0
+        # arduino.write(f'{90}\n'.encode())  # Uncomment if you want to auto-center
+
+    # Show FPS
+    fps = 1 / (new_frame_time - prev_frame_time)
+    prev_frame_time = new_frame_time
+    cv2.putText(img, f'FPS: {int(fps)}', (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
+
+    # Show image
+    cv2.imshow("Tracking Cell Phone", img)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# Cleanup
+cap.release()
+cv2.destroyAllWindows()
+arduino.close()
